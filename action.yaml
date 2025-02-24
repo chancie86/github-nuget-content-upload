@@ -1,0 +1,86 @@
+name: github-nuget-content-upload
+author: Hoi Fong Chan
+description: Creates and uploads nuget packages from folders
+
+inputs:
+  NugetName:
+    description: The name of the nuget source
+    required: true
+  NugetApiKey:
+    description: The api key for the nuget source
+    required: true
+  PackageName:
+    required: true
+  PackageVersion:
+    description: The package version, e.g. 1.2.3-beta.4
+    required: true
+  SourcePath:
+    description: The path to the content directory to be packaged
+    required: true
+  WorkingDirectory:
+    default: nugetcontentupload
+    required: false
+
+runs:
+  using: composite
+  steps:
+    - name: Validate inputs
+      shell: pwsh
+      run: |
+        if ([string]::IsNullOrWhiteSpace("${{ inputs.NugetName }}")) {
+          throw "NugetName not specified"
+        }
+
+        if ([string]::IsNullOrWhiteSpace("${{ inputs.NugetApiKey }}")) {
+          throw "NugetApiKey not specified"
+        }
+
+        if ([string]::IsNullOrWhiteSpace("${{ inputs.PackageName }}")) {
+          throw "PackageName not specified"
+        }
+
+        if ([string]::IsNullOrWhiteSpace("${{ inputs.PackageVersion }}")) {
+          throw "PackageVersion not specified"
+        }
+
+        if (-not(Test-Path "${{ inputs.SourcePath }}" -PathType Container)) {
+          throw "SourcePath does not exist"
+        }
+    - name: Upload
+      shell: pwsh
+      run: |
+        $version = "${{ inputs.PackageVersion }}"
+        $sourcePath = "${{ inputs.SourcePath }}"
+        $workingDirectory = "${{ inputs.WorkingDirectory }}"
+        $deployPath = Join-Path $workingDirectory "deploy"
+        $packageName = "${{ inputs.PackageName }}"
+        $packagePath = Join-Path $workingDirectory "package"
+        $outputPath = Join-Path $workingDirectory "output"
+        $contentPath = Join-Path $packagePath "content"
+
+        Write-Host "Copying package content"
+        Copy-Item $SourcePath $contentPath -Recurse
+
+        Write-Host "Creating nuget project"
+        $projectBuilder = [System.Text.StringBuilder]::new()
+        [void]$projectBuilder.AppendLine('<Project Sdk="Microsoft.NET.Sdk">')
+        [void]$projectBuilder.AppendLine('  <PropertyGroup>')
+        [void]$projectBuilder.AppendLine('    <TargetFramework>netstandard2.1</TargetFramework>')
+        [void]$projectBuilder.AppendLine('    <IncludeBuildOutput>false</IncludeBuildOutput>')
+        [void]$projectBuilder.AppendLine('    <ContentTargetFolders>content</ContentTargetFolders>')
+        [void]$projectBuilder.AppendLine('  </PropertyGroup>')
+        [void]$projectBuilder.AppendLine('  <ItemGroup>')
+        [void]$projectBuilder.AppendLine('    <None Include="content\**" Pack="true" />')
+        [void]$projectBuilder.AppendLine('  </ItemGroup>')
+        [void]$projectBuilder.AppendLine('</Project>')
+        $projectBuilder.ToString() | Out-File -FilePath "$packagePath\$packageName.csproj"
+
+        Write-Host "Creating nuget package"
+        dotnet pack "$packagePath\$packageName.csproj" /p:PackageVersion=$version --output $outputPath
+
+        Write-Host "Pushing package to nuget"
+        $packagePath = Join-Path $outputPath "$packageName.$version.nupkg"
+        dotnet nuget push "$packagePath" --api-key ${{ inputs.NugetApiKey }} --source ${{ inputs.NugetName }}
+
+        Write-Host "Cleaning up"
+        Remove-Item -Path $workingDirectory -Recurse -ErrorAction SilentlyContinue
